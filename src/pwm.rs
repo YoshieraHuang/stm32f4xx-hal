@@ -1,6 +1,7 @@
 use crate::{bb, hal as pwm, time::Hertz, timer::Timer};
 use cast::{u16, u32};
 use core::{marker::PhantomData, mem::MaybeUninit};
+use crate::rcc::{Clocks, GetBusFreq};
 
 use crate::pac::{TIM1, TIM11, TIM5, TIM9};
 
@@ -166,6 +167,27 @@ macro_rules! pwm_pin {
             pub fn set_duty(&mut self, duty: u16) {
                 unsafe { (*<$TIMX>::ptr()).$ccr.write(|w| w.ccr().bits(duty.into())) }
             }
+
+            #[inline]
+            pub fn reset(&mut self) {
+                unsafe {
+                    (*<$TIMX>::ptr()).$ccr.reset();
+                    (*<$TIMX>::ptr()).arr.reset();
+                }
+            }
+
+            #[inline]
+            pub fn set_freq<T>(&mut self, freq: T, clocks: &Clocks)
+            where
+                T: Into<Hertz>
+            {
+                let clk = <$TIMX>::get_timer_frequency(clocks);
+                let ticks = clk.0 / freq.into().0;
+                let psc = u16((ticks - 1) / (1 << 16)).unwrap();
+                unsafe { (*<$TIMX>::ptr()).psc.write(|w| w.psc().bits(psc) )};
+                let arr = u16(ticks / u32(psc + 1)).unwrap();
+                unsafe { (*<$TIMX>::ptr()).arr.write(|w| w.bits(u32(arr)) )};
+            }
         }
 
         impl pwm::PwmPin for PwmChannels<$TIMX, $C> {
@@ -193,10 +215,9 @@ macro_rules! pwm_all_channels {
     ($($TIMX:ident: ($timX:ident),)+) => {
         $(
             impl Timer<$TIMX> {
-                pub fn pwm<P, PINS, T>(self, _pins: PINS, freq: T) -> PINS::Channels
+                pub fn pwm<P, PINS>(self, _pins: PINS) -> PINS::Channels
                 where
                     PINS: Pins<$TIMX, P>,
-                    T: Into<Hertz>,
                 {
                     if PINS::C1 {
                         self.tim.ccmr1_output()
@@ -220,11 +241,12 @@ macro_rules! pwm_all_channels {
                     // might as well enable for the auto-reload too
                     self.tim.cr1.modify(|_, w| w.arpe().set_bit());
 
-                    let ticks = self.clk.0 / freq.into().0;
-                    let psc = u16((ticks - 1) / (1 << 16)).unwrap();
-                    self.tim.psc.write(|w| w.psc().bits(psc) );
-                    let arr = u16(ticks / u32(psc + 1)).unwrap();
-                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+                    // let ticks = self.clk.0 / freq.into().0;
+                    // let psc = u16((ticks - 1) / (1 << 16)).unwrap();
+                    // self.tim.psc.write(|w| w.psc().bits(psc) );
+                    // let arr = u16(ticks / u32(psc + 1)).unwrap();
+                    // self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+                    self.tim.arr.reset();
 
                     // Trigger update event to load the registers
                     self.tim.cr1.modify(|_, w| w.urs().set_bit());
